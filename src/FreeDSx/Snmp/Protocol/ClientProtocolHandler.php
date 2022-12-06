@@ -30,12 +30,15 @@ use FreeDSx\Snmp\Message\Request\MessageRequestV2;
 use FreeDSx\Snmp\Message\Request\MessageRequestV3;
 use FreeDSx\Snmp\Message\Response\MessageResponseInterface;
 use FreeDSx\Snmp\Message\ScopedPduRequest;
+use FreeDSx\Snmp\Protocol\Socket\SocketInterface;
 use FreeDSx\Snmp\Request\TrapV1Request;
 use FreeDSx\Snmp\Request\TrapV2Request;
 use FreeDSx\Snmp\Response\ReportResponse;
-use FreeDSx\Socket\Queue\Asn1MessageQueue;
-use FreeDSx\Socket\Socket;
+use React\EventLoop\Loop;
+use React\Promise\Deferred;
+use React\Promise\PromiseInterface;
 use function is_bool;
+use function React\Promise\resolve;
 
 /**
  * Handles SNMP client protocol logic.
@@ -55,80 +58,93 @@ class ClientProtocolHandler
 
     /**
      * @param array $options
-     * @param null|Socket $socket
+     * @param SocketInterface|null $socket
      * @param null|SnmpEncoder $encoder
-     * @param null|Asn1MessageQueue $queue
      * @param SecurityModelModuleFactory|null $securityModelFactory
      */
-    public function __construct(array $options, ?Socket $socket = null, ?SnmpEncoder $encoder = null, ?Asn1MessageQueue $queue = null, ?SecurityModelModuleFactory $securityModelFactory = null)
+    public function __construct(array $options, ?SocketInterface $socket = null, ?SnmpEncoder $encoder = null, ?SecurityModelModuleFactory $securityModelFactory = null)
     {
         $this->socket = $socket;
         $this->encoder = $encoder;
         $this->options = $options + [
-            'transport' => 'udp',
-            'use_tls' => false,
-            'ssl_validate_cert' => true,
-            'ssl_allow_self_signed' => null,
-            'ssl_ca_cert' => null,
-            'ssl_peer_name' => null,
-            'port' => 161,
-            'host' => 'localhost',
-            'user' => null,
-            'community' => 'public',
-            'udp_retry' => 5,
-            'timeout_connect' => 5,
-            'timeout_read' => 10,
-            'version' => 2,
-            'security_model' => 'usm',
-            'engine_id' => null,
-            'context_name' => null,
-            'use_auth' => false,
-            'use_priv' => false,
-            'auth_mech' => null,
-            'priv_mech' => null,
-            'priv_pwd' => null,
-            'auth_pwd' => null,
-            'id_min' => null,
-            'id_max' => null,
-        ];
-        $this->queue = $queue;
+                'transport' => 'udp',
+                'use_tls' => false,
+                'ssl_validate_cert' => true,
+                'ssl_allow_self_signed' => null,
+                'ssl_ca_cert' => null,
+                'ssl_peer_name' => null,
+                'port' => 161,
+                'host' => 'localhost',
+                'user' => null,
+                'community' => 'public',
+                'udp_retry' => 5,
+                'timeout_connect' => 5,
+                'timeout_read' => 10,
+                'version' => 2,
+                'security_model' => 'usm',
+                'engine_id' => null,
+                'context_name' => null,
+                'use_auth' => false,
+                'use_priv' => false,
+                'auth_mech' => null,
+                'priv_mech' => null,
+                'priv_pwd' => null,
+                'auth_pwd' => null,
+                'id_min' => null,
+                'id_max' => null,
+            ];
         $this->securityModelFactory = $securityModelFactory ?: new SecurityModelModuleFactory();
     }
+
+    public function __destruct()
+    {
+        unset($this->socket);
+    }
+
 
     /**
      * Handles client protocol logic for an SNMP request to get a potential response.
      *
      * @param Pdu $request
      * @param array $options
-     * @return MessageResponseInterface
+     * @return PromiseInterface<?MessageResponseInterface>
      * @throws ConnectionException
      * @throws \Exception
      */
     public function handle(
-        Pdu $request,
+        Pdu   $request,
         array $options
-    ): ?MessageResponseInterface {
+    ): PromiseInterface
+    {
+        $deferred = new Deferred();
         $options = \array_merge($this->options, $options);
         $message = $this->getMessageRequest($request, $options);
 
         if (!\in_array($request->getPduTag(), $this->allowedRequests[$message->getVersion()], true)) {
-            throw new InvalidArgumentException(sprintf(
-                'The request type "%s" is not allowed in SNMP version %s.',
-                get_class($request),
-                $this->versionMap[$message->getVersion()]
-            ));
+            $deferred->reject(
+                new InvalidArgumentException(sprintf(
+                    'The request type "%s" is not allowed in SNMP version %s.',
+                    get_class($request),
+                    $this->versionMap[$message->getVersion()] ?? 'UNKNOWN'
+                ))
+            );
         }
 
         if ($message instanceof MessageRequestV3) {
-            $response = $this->sendV3Message($message, $options);
+            $this->sendV3Message($message, $options)->then(function ($response) use ($deferred) {
+                $deferred->resolve($response);
+            });
         } else {
             $id = $this->generateId();
             $this->setPduId($request, $id);
-            $response = $this->sendRequestGetResponse($message);
-            $this->validateResponse($response, $id);
+            $this->sendRequestGetResponse($message)->then(function ($response) use ($deferred, $id) {
+                $this->validateResponse($response, $id);
+                $deferred->resolve($response);
+            }, function ($e) use ($deferred) {
+                $deferred->reject($e);
+            });
         }
-
-        return $response;
+        return $deferred->promise();
     }
 
     /**
@@ -145,35 +161,59 @@ class ClientProtocolHandler
 
     /**
      * @param MessageRequestInterface $message
-     * @return MessageResponseInterface|null
      * @throws ConnectionException
      * @throws EncoderException
      */
-    protected function sendRequestGetResponse(MessageRequestInterface $message) : ?MessageResponseInterface
+    protected function sendRequestGetResponse(MessageRequestInterface $message)
     {
-        try {
-            $this->socket()->write($this->encoder()->encode($message->toAsn1()));
-        } catch (\FreeDSx\Socket\Exception\ConnectionException $e) {
-            throw new ConnectionException('Unable to send message to host.', $e->getCode(), $e);
-        }
+        $encoder = $this->encoder();
+        return $this->socket()->then(function (SocketInterface $socket) use ($message, $encoder) {
 
-        # No responses expected from traps...
-        if ($message->getRequest() instanceof TrapV1Request || $message->getRequest() instanceof TrapV2Request) {
-            return null;
-        }
+            $deferred = new Deferred();
 
-        try {
-            return $this->queue()->getMessage();
-        } catch (\FreeDSx\Socket\Exception\ConnectionException $e) {
-            throw new ConnectionException('No message received from host.', $e->getCode(), $e);
-        }
+            /*
+             * TODO:
+             * merge multi package responses, like: \FreeDSx\Socket\Queue\MessageQueue::getMessages
+             */
+
+            $socket->onData(function ($rawData) use ($encoder, $deferred) {
+                try {
+                    $asn1 = $encoder->decode($rawData);
+                    $message = \FreeDSx\Snmp\Message\Response\MessageResponse::fromAsn1($asn1);
+                    $deferred->resolve($message);
+                } catch (\Throwable $e) {
+                    $deferred->reject(
+                        new ConnectionException('No message received from host.', $e->getCode(), $e)
+                    );
+                }
+            });
+
+            $socket->onError(function ($e) use ($deferred) {
+                $deferred->reject($e);
+            });
+
+            //give a chance to register all the callbacks
+            Loop::futureTick(function () use ($socket, $message, $encoder) {
+                $socket->write(
+                    $encoder->encode($message->toAsn1())
+                );
+            });
+
+            # No responses expected from traps...
+            if ($message->getRequest() instanceof TrapV1Request || $message->getRequest() instanceof TrapV2Request) {
+                return resolve(null);
+            }
+
+            return $deferred->promise();
+
+        });
     }
 
     /**
      * @param MessageRequestV3 $message
      * @param array $options
      * @param bool $forcedDiscovery
-     * @return MessageResponseV3|null
+     * @return PromiseInterface<?MessageResponseV3>
      * @throws ConnectionException
      * @throws SnmpRequestException
      * @throws EncoderException
@@ -182,9 +222,10 @@ class ClientProtocolHandler
      */
     protected function sendV3Message(
         MessageRequestV3 $message,
-        array $options,
-        bool $forcedDiscovery = false
-    ): ?MessageResponseV3 {
+        array            $options,
+        bool             $forcedDiscovery = false
+    ): PromiseInterface
+    {
         $response = null;
         $header = $message->getMessageHeader();
         $securityModule = $this->securityModelFactory->get($header->getSecurityModel());
@@ -203,20 +244,20 @@ class ClientProtocolHandler
                     $message->getVersion()
                 ));
             }
-            $response = $this->sendRequestGetResponse($message);
+            return $this->sendRequestGetResponse($message)->then(function ($response) use ($securityModule, $options, $id) {
+                if ($response instanceof MessageResponseV3) {
+                    $response = $securityModule->handleIncomingMessage($response, $options);
+                }
+                if (!$response instanceof MessageResponseV3) {
+                    throw new ProtocolException(sprintf(
+                        'Expected a SNMPv3 response, but got: v%d',
+                        $response instanceof MessageResponseInterface ? $response->getVersion() : 0
+                    ));
+                }
+                $this->validateResponse($response, $id);
+                return $response;
+            });
 
-            if ($response instanceof MessageResponseV3) {
-                $response = $securityModule->handleIncomingMessage($response, $options);
-            }
-            if (!$response instanceof MessageResponseV3) {
-                throw new ProtocolException(sprintf(
-                    'Expected a SNMPv3 response, but got: v%d',
-                    $response instanceof MessageResponseInterface ? $response->getVersion() : 0
-                ));
-            }
-            $this->validateResponse($response, $id);
-
-            return $response;
         } catch (RediscoveryNeededException $e) {
             if (!$forcedDiscovery) {
                 return $this->sendV3Message($message, $options, true);
@@ -236,10 +277,11 @@ class ClientProtocolHandler
      * @throws SnmpRequestException
      */
     protected function performDiscovery(
-        MessageRequestV3 $message,
+        MessageRequestV3             $message,
         SecurityModelModuleInterface $securityModule,
-        array $options
-    ) : void {
+        array                        $options
+    ): void
+    {
         $discovery = $securityModule->getDiscoveryRequest($message, $options);
         $id = $this->generateId();
         $this->setPduId($discovery->getRequest(), $id);
@@ -260,7 +302,7 @@ class ClientProtocolHandler
      * @return MessageRequestInterface
      * @throws \Exception
      */
-    protected function getMessageRequest(Pdu $request, array $options) : MessageRequestInterface
+    protected function getMessageRequest(Pdu $request, array $options): MessageRequestInterface
     {
         if ($options['version'] === 1) {
             return new MessageRequestV1($options['community'], $request);
@@ -270,7 +312,7 @@ class ClientProtocolHandler
             $engineId = ($options['engine_id'] instanceof EngineId) ? $options['engine_id'] : null;
             return new MessageRequestV3(
                 $this->generateMessageHeader($request, $options),
-                new ScopedPduRequest($request, $engineId, (string) $options['context_name'])
+                new ScopedPduRequest($request, $engineId, (string)$options['context_name'])
             );
         } else {
             throw new RuntimeException(sprintf('SNMP version %s is not supported', $options['version']));
@@ -282,10 +324,10 @@ class ClientProtocolHandler
      * of the PDU (essentially the request / response objects). This made it awkward to work with when separating the
      * logic of the ID generation /message creation. Maybe a better way to handle this in general?
      */
-    protected function setPduId(Pdu $request, int $id) : void
+    protected function setPduId(Pdu $request, int $id): void
     {
         # The Trap v1 PDU has no request ID associated with it.
-        if ($request instanceof  TrapV1Request) {
+        if ($request instanceof TrapV1Request) {
             return;
         }
         $requestObject = new \ReflectionObject($request);
@@ -301,9 +343,10 @@ class ClientProtocolHandler
      * @throws \Exception
      */
     protected function generateMessageHeader(
-        Pdu $request,
+        Pdu   $request,
         array $options
-    ): MessageHeader {
+    ): MessageHeader
+    {
         $header = new MessageHeader($this->generateId(0));
 
         $useAuth = $options['use_auth'];
@@ -338,10 +381,10 @@ class ClientProtocolHandler
     /**
      * @param null|MessageResponseInterface $message
      * @param int $expectedId
-     * @param  bool $throwOnReport
+     * @param bool $throwOnReport
      * @throws SnmpRequestException
      */
-    protected function validateResponse(?MessageResponseInterface $message, int $expectedId, bool $throwOnReport = true) : void
+    protected function validateResponse(?MessageResponseInterface $message, int $expectedId, bool $throwOnReport = true): void
     {
         if ($message === null) {
             return;

@@ -12,7 +12,10 @@ namespace FreeDSx\Snmp;
 
 use FreeDSx\Snmp\Exception\EndOfWalkException;
 use FreeDSx\Snmp\Exception\RuntimeException;
+use React\Promise\Deferred;
+use React\Promise\PromiseInterface;
 use function count;
+use function React\Promise\resolve;
 
 /**
  * Provides a simple API to perform an SNMP walk.
@@ -80,43 +83,28 @@ class SnmpWalk
         $this->subtreeOnly = $subtreeOnly;
     }
 
-    /**
-     * Get the next OID in the walk.
-     *
-     * @return Oid
-     * @throws Exception\ConnectionException
-     * @throws Exception\SnmpRequestException
-     * @throws EndOfWalkException
-     */
-    public function next(): Oid
+    public function walk(callable $callback, ?Oid $referenceOid = null): void
     {
-        if ($this->isComplete()) {
-            throw new EndOfWalkException('There are no more OIDs left in the walk.');
-        }
-        if (count($this->next) === 0) {
-            $this->next = $this->getNextOid();
-        }
-        $this->throwIfNoNextOids();
-        $this->current = \array_shift($this->next);
-        $this->count++;
-        if ($this->current === null) {
-            throw new RuntimeException('Expected another OID in the walk, but it was null.');
-        }
-
-        return $this->current;
-    }
-
-    /**
-     * An alias of the next() method.
-     *
-     * @return Oid
-     * @throws EndOfWalkException
-     * @throws Exception\ConnectionException
-     * @throws Exception\SnmpRequestException
-     */
-    public function getOid() : Oid
-    {
-        return $this->next();
+        $this->getNextOid($referenceOid)->then(function (array $oids) use ($callback) {
+            if ($oids) {
+                $currentOid = null;
+                foreach ($oids as $oid) {
+                    $this->count++;
+                    $currentOid = $oid;
+                    $cancel = !call_user_func($callback, $oid, $this);
+                    $cancel = $cancel || $this->isComplete($oid);
+                    if ($cancel) {
+                        return;
+                    }
+                }
+                $this->walk($callback, $currentOid);
+            } else {
+                throw new EndOfWalkException();
+            }
+        })->otherwise(function ($e) {
+            var_dump($e);
+            throw $e;
+        });
     }
 
     /**
@@ -125,16 +113,16 @@ class SnmpWalk
      * @throws Exception\SnmpRequestException
      * @throws EndOfWalkException
      */
-    public function isComplete() : bool
+    protected function isComplete(Oid $oid): bool
     {
-        if ($this->current && $this->current->isEndOfMibView()) {
+        if ($oid->isEndOfMibView()) {
             return true;
         }
-        if ($this->current && $this->current->getOid() === $this->endAt) {
+        if ($oid->getOid() === $this->endAt) {
             return true;
         }
         if ($this->subtreeOnly) {
-            return $this->isEndOfSubtree();
+            return $this->isEndOfSubtree($oid);
         }
 
         return false;
@@ -145,7 +133,7 @@ class SnmpWalk
      *
      * @return int
      */
-    public function count() : int
+    public function count(): int
     {
         return $this->count;
     }
@@ -157,33 +145,6 @@ class SnmpWalk
     public function subtreeOnly(bool $subtreeOnly = true)
     {
         $this->subtreeOnly = $subtreeOnly;
-
-        return $this;
-    }
-
-    /**
-     * Whether or not call the next method will produce more OIDs.
-     *
-     * @return bool
-     * @throws Exception\ConnectionException
-     * @throws Exception\SnmpRequestException
-     * @throws EndOfWalkException
-     */
-    public function hasOids() : bool
-    {
-        return !$this->isComplete();
-    }
-
-    /**
-     * Set the walk back to the original start OID.
-     *
-     * @return $this
-     */
-    public function restart()
-    {
-        $this->current = null;
-        $this->next = [];
-        $this->count = 0;
 
         return $this;
     }
@@ -210,19 +171,6 @@ class SnmpWalk
     public function endAt(string $oid)
     {
         $this->endAt = $oid;
-
-        return $this;
-    }
-
-    /**
-     * Set the walk to skip to a specific OID, regardless of where it is currently.
-     *
-     * @param string $oid
-     * @return $this
-     */
-    public function skipTo(string $oid)
-    {
-        $this->current = new Oid($oid);
 
         return $this;
     }
@@ -258,18 +206,22 @@ class SnmpWalk
     }
 
     /**
-     * @return Oid[]
+     * @return PromiseInterface<Oid[]>
      * @throws Exception\ConnectionException
      * @throws Exception\SnmpRequestException
      */
-    protected function getNextOid() : array
+    protected function getNextOid(?Oid $reference): PromiseInterface
     {
-        $currentOid = $this->current ? $this->current->getOid() : $this->startAt;
+        $currentOid = $reference ? $reference->getOid() : $this->startAt;
 
         if (($this->useGetBulk === null || $this->useGetBulk) && $this->client->getOptions()['version'] >= 2) {
-            return $this->client->getBulk($this->maxRepetitions, 0, $currentOid)->toArray();
+            return $this->client->getBulk($this->maxRepetitions, 0, $currentOid)->then(function (OidList $oidList) {
+                return $oidList->toArray();
+            });
         } else {
-            return $this->client->getNext($currentOid)->toArray();
+            return $this->client->getNext($currentOid)->then(function (OidList $oidList) {
+                return $oidList->toArray();
+            });
         }
     }
 
@@ -279,23 +231,9 @@ class SnmpWalk
      * @throws Exception\SnmpRequestException
      * @throws EndOfWalkException
      */
-    protected function isEndOfSubtree() : bool
+    protected function isEndOfSubtree(Oid $oid): bool
     {
-        if (count($this->next) === 0) {
-            $this->next = $this->getNextOid();
-        }
-        $this->throwIfNoNextOids();
-
-        return (\substr($this->next[0]->getOid(), 0, \strlen($this->startAt)) !== $this->startAt);
+        return (\substr($oid->getOid(), 0, \strlen($this->startAt)) !== $this->startAt);
     }
 
-    /**
-     * @throws EndOfWalkException
-     */
-    protected function throwIfNoNextOids() : void
-    {
-        if (count($this->next) === 0) {
-            throw new EndOfWalkException('There are no more OIDs left in the walk.');
-        }
-    }
 }
