@@ -268,7 +268,7 @@ class SnmpClient
         string $endAt = null
     ): SnmpWalk
     {
-        return $this->snmpWalkCache ?? $this->snmpWalkCache = new SnmpWalk(
+        return new SnmpWalk(
             $this,
             $startAt,
             $endAt

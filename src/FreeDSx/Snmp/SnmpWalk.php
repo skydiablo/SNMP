@@ -91,8 +91,7 @@ class SnmpWalk
                 foreach ($oids as $oid) {
                     $this->count++;
                     $currentOid = $oid;
-                    $cancel = !call_user_func($callback, $oid, $this);
-                    $cancel = $cancel || $this->isComplete($oid);
+                    $cancel = $this->isComplete($oid) || !call_user_func($callback, $oid, $this);
                     if ($cancel) {
                         return;
                     }
