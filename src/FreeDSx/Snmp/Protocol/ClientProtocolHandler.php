@@ -172,14 +172,7 @@ class ClientProtocolHandler
         $encoder = $this->encoder();
         $rawDataCollector = '';
         return $this->socket()->then(function (SocketInterface $socket) use ($message, $encoder, &$rawDataCollector) {
-
             $deferred = new Deferred();
-
-            /*
-             * TODO:
-             * merge multi package responses, like: \FreeDSx\Socket\Queue\MessageQueue::getMessages
-             */
-
             $socket->onData(function ($rawData) use ($encoder, $deferred, &$rawDataCollector) {
                 try {
                     $asn1 = $encoder->decode($rawDataCollector ? $rawDataCollector . $rawData : $rawData);
@@ -189,7 +182,7 @@ class ClientProtocolHandler
                     $rawDataCollector .= $rawData;
                 } catch (\Throwable $e) {
                     $deferred->reject(
-                        new ConnectionException('No message received from host.', $e->getCode(), $e)
+                        new ConnectionException(sprintf('Error for message received from host "%s".', $this->options['host'] ?? 'unknown'), $e->getCode(), $e)
                     );
                 }
             });
