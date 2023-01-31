@@ -10,12 +10,8 @@
 
 namespace FreeDSx\Snmp;
 
-use FreeDSx\Snmp\Exception\EndOfWalkException;
-use FreeDSx\Snmp\Exception\RuntimeException;
 use React\Promise\Deferred;
 use React\Promise\PromiseInterface;
-use function count;
-use function React\Promise\resolve;
 
 /**
  * Provides a simple API to perform an SNMP walk.
@@ -40,16 +36,6 @@ class SnmpWalk
     protected $endAt;
 
     /**
-     * @var Oid|null
-     */
-    protected $current;
-
-    /**
-     * @var Oid[]
-     */
-    protected $next = [];
-
-    /**
      * @var int
      */
     protected $count = 0;
@@ -70,6 +56,12 @@ class SnmpWalk
     protected $maxRepetitions = 100;
 
     /**
+     * Is this walk in run mode
+     * @var bool
+     */
+    protected bool $run = true;
+
+    /**
      * @param SnmpClient $client
      * @param null|string $startAt
      * @param null|string $endAt
@@ -78,53 +70,85 @@ class SnmpWalk
     public function __construct(SnmpClient $client, ?string $startAt = null, ?string $endAt = null, bool $subtreeOnly = true)
     {
         $this->client = $client;
-        $this->startAt = $startAt ?? '1.3.6.1.2.1';
+        $this->startAt = $startAt ?: '1.3.6.1.2.1';
         $this->endAt = $endAt;
         $this->subtreeOnly = $subtreeOnly;
     }
 
-    public function walk(callable $callback, ?Oid $referenceOid = null): void
+    /**
+     * @return SnmpClient
+     */
+    public function getClient(): SnmpClient
     {
-        $this->getNextOid($referenceOid)->then(function (array $oids) use ($callback) {
+        return $this->client;
+    }
+
+    /**
+     * @return string
+     */
+    public function getStartAt(): string
+    {
+        return $this->startAt;
+    }
+
+    /**
+     * @return string|null
+     */
+    public function getEndAt(): ?string
+    {
+        return $this->endAt;
+    }
+
+    public function stop(): void
+    {
+        $this->run = false;
+        $this->client->close();
+    }
+
+    /**
+     * @param callable $callback
+     * @param Oid|null $referenceOid
+     * @return PromiseInterface
+     * @throws Exception\ConnectionException
+     * @throws Exception\SnmpRequestException
+     */
+    public function walk(callable $callback, ?Oid $referenceOid = null): PromiseInterface
+    {
+        $deferred = new Deferred();
+        $this->run = true;
+        $this->getNextOid($referenceOid)->then(function (array $oids) use ($callback, $deferred) {
             if ($oids) {
                 $currentOid = null;
                 foreach ($oids as $oid) {
                     $this->count++;
                     $currentOid = $oid;
-                    $cancel = $this->isComplete($oid) || !call_user_func($callback, $oid, $this);
+                    $cancel = $this->isComplete($oid)
+                        || !call_user_func($callback, $oid, $this);
                     if ($cancel) {
+                        $deferred->resolve($this);
                         return;
                     }
                 }
-                $this->walk($callback, $currentOid);
+                $this->walk($callback, $currentOid)->then(fn(self $that) => $deferred->resolve($that));
             } else {
-                throw new EndOfWalkException();
+                $deferred->resolve($this);
             }
-        })->otherwise(function ($e) {
-            var_dump($e);
-            throw $e;
+        })->otherwise(function ($e) use ($deferred) {
+            $deferred->reject($e);
         });
+        return $deferred->promise();
     }
 
     /**
+     * @param Oid $oid
      * @return bool
-     * @throws Exception\ConnectionException
-     * @throws Exception\SnmpRequestException
-     * @throws EndOfWalkException
      */
     protected function isComplete(Oid $oid): bool
     {
-        if ($oid->isEndOfMibView()) {
-            return true;
-        }
-        if ($oid->getOid() === $this->endAt) {
-            return true;
-        }
-        if ($this->subtreeOnly) {
-            return $this->isEndOfSubtree($oid);
-        }
-
-        return false;
+        return !$this->run
+            || $oid->isEndOfMibView()
+            || ($oid->getOid() === $this->endAt)
+            || ($this->subtreeOnly && $this->isEndOfSubtree($oid));
     }
 
     /**
@@ -225,14 +249,12 @@ class SnmpWalk
     }
 
     /**
+     * @param Oid $oid
      * @return bool
-     * @throws Exception\ConnectionException
-     * @throws Exception\SnmpRequestException
-     * @throws EndOfWalkException
      */
     protected function isEndOfSubtree(Oid $oid): bool
     {
-        return (\substr($oid->getOid(), 0, \strlen($this->startAt)) !== $this->startAt);
+        return !str_starts_with($oid->getOid(), $this->startAt);
     }
 
 }

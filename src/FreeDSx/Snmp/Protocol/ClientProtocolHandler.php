@@ -11,6 +11,7 @@
 namespace FreeDSx\Snmp\Protocol;
 
 use FreeDSx\Asn1\Exception\EncoderException;
+use FreeDSx\Asn1\Exception\PartialPduException;
 use FreeDSx\Snmp\Exception\ConnectionException;
 use FreeDSx\Snmp\Exception\InvalidArgumentException;
 use FreeDSx\Snmp\Exception\ProtocolException;
@@ -38,6 +39,7 @@ use React\EventLoop\Loop;
 use React\Promise\Deferred;
 use React\Promise\PromiseInterface;
 use function is_bool;
+use function React\Async\await;
 use function React\Promise\resolve;
 
 /**
@@ -98,7 +100,7 @@ class ClientProtocolHandler
 
     public function __destruct()
     {
-        unset($this->socket);
+//        unset($this->socket);
     }
 
 
@@ -156,6 +158,7 @@ class ClientProtocolHandler
     {
         if ($this->socket) {
             $this->socket->close();
+            $this->socket = null;
         }
     }
 
@@ -167,7 +170,8 @@ class ClientProtocolHandler
     protected function sendRequestGetResponse(MessageRequestInterface $message)
     {
         $encoder = $this->encoder();
-        return $this->socket()->then(function (SocketInterface $socket) use ($message, $encoder) {
+        $rawDataCollector = '';
+        return $this->socket()->then(function (SocketInterface $socket) use ($message, $encoder, &$rawDataCollector) {
 
             $deferred = new Deferred();
 
@@ -176,11 +180,13 @@ class ClientProtocolHandler
              * merge multi package responses, like: \FreeDSx\Socket\Queue\MessageQueue::getMessages
              */
 
-            $socket->onData(function ($rawData) use ($encoder, $deferred) {
+            $socket->onData(function ($rawData) use ($encoder, $deferred, &$rawDataCollector) {
                 try {
-                    $asn1 = $encoder->decode($rawData);
+                    $asn1 = $encoder->decode($rawDataCollector ? $rawDataCollector . $rawData : $rawData);
                     $message = \FreeDSx\Snmp\Message\Response\MessageResponse::fromAsn1($asn1);
                     $deferred->resolve($message);
+                } catch (PartialPduException $e) {
+                    $rawDataCollector .= $rawData;
                 } catch (\Throwable $e) {
                     $deferred->reject(
                         new ConnectionException('No message received from host.', $e->getCode(), $e)
@@ -232,7 +238,7 @@ class ClientProtocolHandler
 
         try {
             if ($forcedDiscovery || $securityModule->isDiscoveryRequestNeeded($message, $options)) {
-                $this->performDiscovery($message, $securityModule, $options);
+                $response = await($this->performDiscovery($message, $securityModule, $options));
             }
 
             $id = $this->generateId();
@@ -280,20 +286,23 @@ class ClientProtocolHandler
         MessageRequestV3             $message,
         SecurityModelModuleInterface $securityModule,
         array                        $options
-    ): void
+    )
     {
         $discovery = $securityModule->getDiscoveryRequest($message, $options);
         $id = $this->generateId();
         $this->setPduId($discovery->getRequest(), $id);
-        $response = $this->sendRequestGetResponse($discovery);
-        if (!$response instanceof MessageResponseV3) {
-            throw new ProtocolException(sprintf(
-                'Expected an SNMPv3 response. Received v%d.',
-                $response instanceof MessageResponseInterface ? $response->getVersion() : 0
-            ));
-        }
-        $this->validateResponse($response, $id, false);
-        $securityModule->handleDiscoveryResponse($message, $response, $options);
+        return $this->sendRequestGetResponse($discovery)->then(function($response) use ($options, $message, $id, $discovery, $securityModule) {
+            if (!$response instanceof MessageResponseV3) {
+                throw new ProtocolException(sprintf(
+                    'Expected an SNMPv3 response. Received v%d.',
+                    $response instanceof MessageResponseInterface ? $response->getVersion() : 0
+                ));
+            }
+            $this->validateResponse($response, $id, false);
+            $securityModule->handleDiscoveryResponse($message, $response, $options);
+            return $response;
+        });
+
     }
 
     /**
@@ -407,7 +416,7 @@ class ClientProtocolHandler
                 implode(', ', $oids)
             ));
         }
-        if ($response->getId() !== $expectedId) {
+        if (($response->getId() !== $expectedId) && ($response->getId() != 0)) {
             throw new SnmpRequestException($message, sprintf(
                 'Unexpected message ID received. Expected %s but got %s.',
                 $expectedId,

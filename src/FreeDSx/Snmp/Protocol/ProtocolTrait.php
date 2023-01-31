@@ -143,7 +143,7 @@ trait ProtocolTrait
                 }
 
                 return \React\Async\async(function (array $options) {
-                    return new UdpSocket($options);
+                    return $this->socket = new UdpSocket($options);
                 })($options);
 
 
