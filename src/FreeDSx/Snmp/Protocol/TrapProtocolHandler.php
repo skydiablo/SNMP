@@ -19,6 +19,7 @@ use FreeDSx\Snmp\Message\Request\MessageRequestV3;
 use FreeDSx\Snmp\Message\Response\MessageResponseV2;
 use FreeDSx\Snmp\Message\Security\UsmSecurityParameters;
 use FreeDSx\Snmp\Protocol\Factory\SecurityModelModuleFactory;
+use FreeDSx\Snmp\Protocol\Socket\SocketInterface;
 use FreeDSx\Snmp\Request\InformRequest;
 use FreeDSx\Snmp\Request\TrapV1Request;
 use FreeDSx\Snmp\Request\TrapV2Request;
@@ -27,6 +28,8 @@ use FreeDSx\Snmp\Trap\TrapContext;
 use FreeDSx\Snmp\Trap\TrapListenerInterface;
 use FreeDSx\Snmp\Module\SecurityModel\Usm\UsmUser;
 use FreeDSx\Socket\Socket;
+
+use function React\Promise\resolve;
 
 /**
  * Handles the logic associated with building the trap request and sending it to the listener.
@@ -148,9 +151,9 @@ class TrapProtocolHandler
         string $ip,
         int $port,
         MessageRequestInterface $message
-    ): void {
+    ): \React\Promise\PromiseInterface {
         if (!($message instanceof MessageRequestV1 || $message instanceof MessageRequestV2)) {
-            return;
+            return resolve(null);
         }
         /** @var InformRequest $request */
         $request = $message->getRequest();
@@ -163,13 +166,15 @@ class TrapProtocolHandler
         $informResponse = new MessageResponseV2($message->getCommunity(), $response);
 
         try {
-            $this->socket(['host' => $ip, 'port' => $port])->write(
-                $this->encoder()->encode($informResponse->toAsn1())
-            );
+            $this->socket(['host' => $ip, 'port' => $port])->then(function (SocketInterface $socket) use ($informResponse) {
+                $socket->write(
+                    $this->encoder()->encode($informResponse->toAsn1())
+                );
+            });
             $this->socket()->close();
             $this->socket = null;
         } catch (\Exception $e) {
-            return;
+            return resolve(null);
         }
     }
 

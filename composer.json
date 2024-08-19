@@ -16,7 +16,7 @@
     "php": ">=7.4",
     "freedsx/asn1": "^0.4.0",
     "react/async": "^4",
-    "react/datagram": "^1.8"
+    "react/datagram": "^1.9"
   },
   "require-dev": {
     "friendsofphp/php-cs-fixer": "^2",
