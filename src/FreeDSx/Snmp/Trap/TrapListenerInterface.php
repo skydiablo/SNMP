@@ -45,6 +45,7 @@ interface TrapListenerInterface
      * Handle a received trap.
      *
      * @param TrapContext $context
+     * @return \React\Promise\PromiseInterface The promise will be resolved when the trap has been handled. return value will be the given context.
      */
-    public function receive(TrapContext $context) : void;
+    public function receive(TrapContext $context) : \React\Promise\PromiseInterface;
 }

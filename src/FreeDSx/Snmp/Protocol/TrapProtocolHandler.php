@@ -10,6 +10,8 @@
 
 namespace FreeDSx\Snmp\Protocol;
 
+use FreeDSx\Snmp\Exception\InvalidArgumentException;
+use FreeDSx\Snmp\Exception\RuntimeException;
 use FreeDSx\Snmp\Message\AbstractMessage;
 use FreeDSx\Snmp\Message\Request\MessageRequest;
 use FreeDSx\Snmp\Message\Request\MessageRequestInterface;
@@ -27,8 +29,10 @@ use FreeDSx\Snmp\Response\Response;
 use FreeDSx\Snmp\Trap\TrapContext;
 use FreeDSx\Snmp\Trap\TrapListenerInterface;
 use FreeDSx\Snmp\Module\SecurityModel\Usm\UsmUser;
-use FreeDSx\Socket\Socket;
 
+use React\Promise\PromiseInterface;
+
+use function React\Promise\reject;
 use function React\Promise\resolve;
 
 /**
@@ -40,18 +44,19 @@ class TrapProtocolHandler
 {
     use ProtocolTrait;
 
-    private const DEFAULT_OPTIONS = [
-        'timeout_connect' => 5,
-        'timeout_read' => 10,
-        'ssl_validate_cert' => true,
-        'ssl_allow_self_signed' => null,
-        'ssl_ca_cert' => null,
-        'ssl_peer_name' => null,
-        'whitelist' => null,
-        'version' => null,
-        'community' => null,
-        'engine_id' => null,
-    ];
+    private const DEFAULT_OPTIONS
+        = [
+            'timeout_connect'       => 5,
+            'timeout_read'          => 10,
+            'ssl_validate_cert'     => true,
+            'ssl_allow_self_signed' => null,
+            'ssl_ca_cert'           => null,
+            'ssl_peer_name'         => null,
+            'whitelist'             => null,
+            'version'               => null,
+            'community'             => null,
+            'engine_id'             => null,
+        ];
 
     /**
      * @var TrapListenerInterface
@@ -59,45 +64,50 @@ class TrapProtocolHandler
     protected $listener;
 
     /**
-     * @param TrapListenerInterface $listener
-     * @param array $options
-     * @param SnmpEncoder|null $encoder
-     * @param Socket|null $socket
+     * @param TrapListenerInterface           $listener
+     * @param array                           $options
+     * @param SnmpEncoder|null                $encoder
+     * @param SocketInterface|null            $socket
      * @param SecurityModelModuleFactory|null $securityModelFactory
      */
     public function __construct(
         TrapListenerInterface $listener,
         array $options,
         ?SnmpEncoder $encoder = null,
-        ?Socket $socket = null,
+        ?SocketInterface $socket = null,
         ?SecurityModelModuleFactory $securityModelFactory = null
     ) {
         $this->listener = $listener;
         $this->options = $options + self::DEFAULT_OPTIONS;
         $this->encoder = $encoder;
         $this->socket = $socket;
-        $this->securityModelFactory = $securityModelFactory ?: new SecurityModelModuleFactory();
+        $this->securityModelFactory = $securityModelFactory
+            ?: new SecurityModelModuleFactory();
     }
 
     /**
      * @param string $ipAddress
      * @param string $data
-     * @param array $options
+     * @param array  $options
      */
     public function handle(
         string $ipAddress,
         string $data,
         array $options
-    ): void {
+    ): \React\Promise\PromiseInterface {
         $options = \array_merge($this->options, $options);
 
         $portLoc = \strrpos($ipAddress, ':');
         if (!is_int($portLoc)) {
-            return;
+            return reject(
+                new InvalidArgumentException(
+                    sprintf('No port available: %s', $ipAddress),
+                ),
+            );
         }
-        $port = (int) \substr(
+        $port = (int)\substr(
             $ipAddress,
-            $portLoc + 1
+            $portLoc + 1,
         );
 
         # IPv6 should be enclosed in brackets, though PHP doesn't represent it that way from a socket.
@@ -106,45 +116,86 @@ class TrapProtocolHandler
             \substr(
                 $ipAddress,
                 0,
-                $portLoc
+                $portLoc,
             ),
-            '[]'
+            '[]',
         );
 
-        if (!$this->isIpAddressAllowed($ipAddress, $options)) {
-            return;
+        if (!$this->isIpAddressAllowed(
+            $ipAddress,
+            $options['whitelist'] ?? null,
+        )
+        ) {
+            return reject(
+                new RuntimeException(
+                    sprintf(
+                        'IP Address is not allowed or in whitelist: %s',
+                        $ipAddress,
+                    ),
+                ),
+            );
         }
         $message = $this->getMessage($data);
-        if ($message && !$this->isVersionAllowed($message->getVersion(), $options)) {
-            return;
+        if ($message
+            && !$this->isVersionAllowed(
+                $message->getVersion(),
+                $options['version'] ?? null,
+            )
+        ) {
+            return reject(
+                new RuntimeException(
+                    sprintf(
+                        'Version is not allowed: %s',
+                        $message->getVersion(),
+                    ),
+                ),
+            );
         }
         if ($message instanceof MessageRequestV3) {
             $message = $this->handleV3Trap($message, $ipAddress, $options);
+            if ($message === null) {
+                return reject(
+                    new RuntimeException(
+                        'Can not generate V3 trap message',
+                    ),
+                );
+            }
         }
         # If an error happened during SNMPv3 processing, then the message will return null
         if ($message === null) {
-            return;
+            return reject(
+                new RuntimeException(
+                    'Can not generate trap message',
+                ),
+            );
         }
         if (!$this->isMessageAllowed($message, $options)) {
-            return;
+            return reject(
+                new RuntimeException(
+                    'Trap message is not allowed',
+                ),
+            );
         }
         $version = $this->versionMap[$message->getVersion()];
         $context = new TrapContext($ipAddress, $version, $message);
-        $this->listener->receive($context);
+        $this->listener->receive($context)->then();
 
         if ($message->getRequest() instanceof InformRequest) {
-            $this->sendResponse(
+            return $this->sendResponse(
                 $ipAddress,
                 $port,
-                $message
+                $message,
             );
         }
+        return resolve(true);
     }
 
     /**
-     * @param string $ip
-     * @param int $port
+     * @param string                  $ip
+     * @param int                     $port
      * @param MessageRequestInterface $message
+     *
+     * @return PromiseInterface
      * @todo Configurable retry logic? Would hold up traps though if we are synchronous
      */
     protected function sendResponse(
@@ -152,7 +203,9 @@ class TrapProtocolHandler
         int $port,
         MessageRequestInterface $message
     ): \React\Promise\PromiseInterface {
-        if (!($message instanceof MessageRequestV1 || $message instanceof MessageRequestV2)) {
+        if (!($message instanceof MessageRequestV1
+            || $message instanceof MessageRequestV2)
+        ) {
             return resolve(null);
         }
         /** @var InformRequest $request */
@@ -161,32 +214,38 @@ class TrapProtocolHandler
             $request->getId(),
             $request->getErrorStatus(),
             $request->getErrorIndex(),
-            $request->getOids()
+            $request->getOids(),
         );
-        $informResponse = new MessageResponseV2($message->getCommunity(), $response);
+        $informResponse = new MessageResponseV2(
+            $message->getCommunity(),
+            $response,
+        );
 
         try {
-            $this->socket(['host' => $ip, 'port' => $port])->then(function (SocketInterface $socket) use ($informResponse) {
-                $socket->write(
-                    $this->encoder()->encode($informResponse->toAsn1())
-                );
-            });
-            $this->socket()->close();
-            $this->socket = null;
+            return $this->socket(['host' => $ip, 'port' => $port])->then(
+                function (SocketInterface $socket) use ($informResponse) {
+                    return $socket->write(
+                        $this->encoder()->encode($informResponse->toAsn1()),
+                    );
+                },
+            );
         } catch (\Exception $e) {
             return resolve(null);
         }
     }
 
     /**
-     * @param string $ip
-     * @param array $options
+     * @param string     $ip
+     * @param array|null $whitelist
+     *
      * @return bool
      */
-    protected function isIpAddressAllowed(string $ip, array $options) : bool
-    {
-        if ($options['whitelist'] !== null && is_array($options['whitelist'])) {
-            return \in_array($ip, $options['whitelist'], true);
+    protected function isIpAddressAllowed(
+        string $ip,
+        ?array $whitelist = null
+    ): bool {
+        if (is_array($whitelist)) {
+            return \in_array($ip, $whitelist, true);
         } else {
             return $this->listener->accept($ip);
         }
@@ -194,18 +253,24 @@ class TrapProtocolHandler
 
     /**
      * @param MessageRequestInterface|null $message
-     * @param array $options
+     * @param array                        $options
+     *
      * @return bool
      */
-    protected function isMessageAllowed(?MessageRequestInterface $message, array $options) : bool
-    {
+    protected function isMessageAllowed(
+        ?MessageRequestInterface $message,
+        array $options
+    ): bool {
         if (!$message) {
             return false;
         }
         $version = $message->getVersion();
         $request = $message->getRequest();
         # Only allow trap type PDUs...
-        if (!($request instanceof TrapV1Request || $request instanceof TrapV2Request || $request instanceof InformRequest)) {
+        if (!($request instanceof TrapV1Request
+            || $request instanceof TrapV2Request
+            || $request instanceof InformRequest)
+        ) {
             return false;
         }
 
@@ -215,7 +280,9 @@ class TrapProtocolHandler
         }
 
         # If we received an SNMP v1/v2 message, and it was defined to only accept a specific community...
-        if (($version === 0 || $version === 1) && $options['community'] !== null && $message instanceof AbstractMessage) {
+        if (($version === 0 || $version === 1) && $options['community'] !== null
+            && $message instanceof AbstractMessage
+        ) {
             return $message->getCommunity() === $options['community'];
         }
 
@@ -224,9 +291,10 @@ class TrapProtocolHandler
 
     /**
      * @param mixed $data
+     *
      * @return MessageRequestInterface
      */
-    protected function getMessage($data) : ?MessageRequestInterface
+    protected function getMessage($data): ?MessageRequestInterface
     {
         try {
             return MessageRequest::fromAsn1($this->encoder()->decode($data));
@@ -237,20 +305,23 @@ class TrapProtocolHandler
 
     /**
      * @param MessageRequestV3 $message
-     * @param string $ipAddress
-     * @param array $options
+     * @param string           $ipAddress
+     * @param array            $options
+     *
      * @return null|MessageRequestV3
      */
     protected function handleV3Trap(
         MessageRequestV3 $message,
         string $ipAddress,
         array $options
-    ) : ?MessageRequestV3 {
+    ): ?MessageRequestV3 {
         $header = $message->getMessageHeader();
         $secParams = $message->getSecurityParameters();
 
         try {
-            $securityModule = $this->securityModelFactory->get($header->getSecurityModel());
+            $securityModule = $this->securityModelFactory->get(
+                $header->getSecurityModel(),
+            );
             # Only supporting USM currently
             if (!$secParams instanceof UsmSecurityParameters) {
                 return null;
@@ -264,14 +335,17 @@ class TrapProtocolHandler
             $usmUser = $this->listener->getUsmUser(
                 $engineId,
                 $ipAddress,
-                $secParams->getUsername()
+                $secParams->getUsername(),
             );
             if ($usmUser === null || !$this->isUsmUserValid($usmUser)) {
                 return null;
             }
 
             $options = $this->mergeOptionsFromUser($usmUser, $options);
-            $message = $securityModule->handleIncomingMessage($message, $options);
+            $message = $securityModule->handleIncomingMessage(
+                $message,
+                $options,
+            );
 
             if (!$message instanceof MessageRequestV3) {
                 return null;
@@ -279,7 +353,9 @@ class TrapProtocolHandler
 
             $scopedPdu = $message->getScopedPdu();
             # @todo Currently unsupported. Lots of work needed to support an inform request in v3.
-            if (!$scopedPdu || $scopedPdu->getRequest() instanceof InformRequest) {
+            if (!$scopedPdu
+                || $scopedPdu->getRequest() instanceof InformRequest
+            ) {
                 return null;
             }
 
@@ -291,11 +367,14 @@ class TrapProtocolHandler
 
     /**
      * @param UsmUser $user
-     * @param array $options
+     * @param array   $options
+     *
      * @return array
      */
-    protected function mergeOptionsFromUser(UsmUser $user, array $options) : array
-    {
+    protected function mergeOptionsFromUser(
+        UsmUser $user,
+        array $options
+    ): array {
         $options['user'] = $user->getUser();
         $options['use_auth'] = $user->getUseAuth();
         $options['use_priv'] = $user->getUsePriv();
@@ -309,17 +388,24 @@ class TrapProtocolHandler
 
     /**
      * @param UsmUser $user
+     *
      * @return bool
      */
-    protected function isUsmUserValid(UsmUser $user) : bool
+    protected function isUsmUserValid(UsmUser $user): bool
     {
         if ($user->getUsePriv() && !$user->getUseAuth()) {
             return false;
         }
-        if ($user->getUseAuth() && ($user->getAuthPassword() === null || $user->getAuthMech() === null)) {
+        if ($user->getUseAuth()
+            && ($user->getAuthPassword() === null
+                || $user->getAuthMech() === null)
+        ) {
             return false;
         }
-        if ($user->getUsePriv() && ($user->getPrivPassword() === null || $user->getPrivMech() === null)) {
+        if ($user->getUsePriv()
+            && ($user->getPrivPassword() === null
+                || $user->getPrivMech() === null)
+        ) {
             return false;
         }
 
@@ -327,14 +413,17 @@ class TrapProtocolHandler
     }
 
     /**
-     * @param int $version
-     * @param array $options
+     * @param int      $version
+     * @param int|null $compareVersion
+     *
      * @return bool
      */
-    protected function isVersionAllowed(int $version, array $options) : bool
-    {
-        if ($options['version'] !== null) {
-            return ($this->versionMap[$version] === $options['version']);
+    protected function isVersionAllowed(
+        int $version,
+        ?int $compareVersion = null
+    ): bool {
+        if ($compareVersion !== null) {
+            return ($this->versionMap[$version] === $compareVersion);
         }
 
         return true;

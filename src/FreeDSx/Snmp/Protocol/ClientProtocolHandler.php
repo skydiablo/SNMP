@@ -185,9 +185,7 @@ class ClientProtocolHandler
                         new ConnectionException(sprintf('Error for message received from host "%s".', $this->options['host'] ?? 'unknown'), $e->getCode(), $e)
                     );
                 }
-            });
-
-            $socket->onError(function ($e) use ($deferred) {
+            })->onError(function ($e) use ($deferred) {
                 $deferred->reject($e);
             });
 

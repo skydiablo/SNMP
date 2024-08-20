@@ -32,7 +32,7 @@ class TrapSink
     protected $options
         = [
             # The IP address to bind to
-            'ip'              => '0.0.0.0',
+            'host'              => '0.0.0.0',
             # The port that the traps will come in on
             'port'            => 162,
             'transport'       => 'udp',
@@ -61,7 +61,7 @@ class TrapSink
      */
     public function __construct(
         TrapListenerInterface $listener,
-        array $options = [],
+        array $options = []
     ) {
         $this->options = array_merge($this->options, $options);
         $this->listener = $listener;

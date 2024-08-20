@@ -24,7 +24,7 @@ $listener = new class implements TrapListenerInterface {
         return null;
     }
 
-    public function receive(TrapContext $context): void
+    public function receive(TrapContext $context): \React\Promise\PromiseInterface
     {
         $trap = $context->getTrap();
         $version = $context->getVersion();
@@ -35,10 +35,12 @@ $listener = new class implements TrapListenerInterface {
         } elseif ($trap instanceof TrapV1Request) {
             echo "---received---, IP: $ip, Version: $version, Trap: {$trap->getEnterprise()}";
         }
+        echo PHP_EOL;
+        return \React\Promise\resolve(true);
     }
 };
 
-echo "server starting...";
+echo "server starting...". PHP_EOL;
 
 $sink = new TrapSink(
     $listener,

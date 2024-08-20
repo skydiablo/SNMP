@@ -36,7 +36,7 @@ class TrapServerRunner implements ServerRunnerInterface
      */
     public function __construct(
         TrapProtocolHandler $handler,
-        array $options = [],
+        array $options = []
     ) {
         $this->options = $options;
         $this->handler = $handler;

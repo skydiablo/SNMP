@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace FreeDSx\Snmp\Protocol\Socket;
 
+use Evenement\EventEmitterInterface;
 use React\Promise\PromiseInterface;
 
 interface SocketInterface
@@ -13,19 +14,19 @@ interface SocketInterface
      * @param callable $callback
      * @return void
      */
-    public function onData(callable $callback): void;
+    public function onData(callable $callback): self;
 
     /**
      * @param callable $callback
      * @return void
      */
-    public function onError(callable $callback): void;
+    public function onError(callable $callback): self;
 
     /**
      * @param string $rawData
-     * @return void
+     * @return PromiseInterface
      */
-    public function write(string $rawData): void;
+    public function write(string $rawData): PromiseInterface;
 
     /**
      * Closes the transport connection associated with the client, if any.
