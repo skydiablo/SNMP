@@ -8,7 +8,7 @@ use FreeDSx\Snmp\Trap\TrapContext;
 use FreeDSx\Snmp\Trap\TrapListenerInterface;
 use FreeDSx\Snmp\TrapSink;
 
-require __DIR__ . '/../../vendor/autoload.php';
+require __DIR__.'/../../vendor/autoload.php';
 
 $listener = new class implements TrapListenerInterface {
     public function accept(string $ip): bool
@@ -24,8 +24,8 @@ $listener = new class implements TrapListenerInterface {
         return null;
     }
 
-    public function receive(TrapContext $context): \React\Promise\PromiseInterface
-    {
+    public function receive(TrapContext $context
+    ): \React\Promise\PromiseInterface {
         $trap = $context->getTrap();
         $version = $context->getVersion();
         $ip = $context->getIpAddress();
@@ -35,17 +35,21 @@ $listener = new class implements TrapListenerInterface {
         } elseif ($trap instanceof TrapV1Request) {
             echo "---received---, IP: $ip, Version: $version, Trap: {$trap->getEnterprise()}";
         }
-        echo PHP_EOL;
+
+        var_dump($context->getTrap());
+
+        echo PHP_EOL.PHP_EOL;
+
         return \React\Promise\resolve(true);
     }
 };
 
-echo "server starting...". PHP_EOL;
+echo "server starting...".PHP_EOL;
 
 $sink = new TrapSink(
     $listener,
     [
         'port' => 10162,
-    ]
+    ],
 );
 $sink->listen();

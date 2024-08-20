@@ -10,14 +10,12 @@
 
 namespace FreeDSx\Snmp;
 
-use FreeDSx\Snmp\Exception\ConnectionException;
 use FreeDSx\Snmp\Protocol\Socket\ServerSocketInterface;
 use FreeDSx\Snmp\Protocol\Socket\UdpServerSocket;
 use FreeDSx\Snmp\Protocol\TrapProtocolHandler;
 use FreeDSx\Snmp\Server\ServerRunner\TrapServerRunner;
 use FreeDSx\Snmp\Server\ServerRunner\ServerRunnerInterface;
 use FreeDSx\Snmp\Trap\TrapListenerInterface;
-use FreeDSx\Socket\SocketServer;
 
 /**
  * Trap Sink to receive SNMP traps from remote hosts and take action on them.
@@ -29,10 +27,10 @@ class TrapSink
     /**
      * @var array
      */
-    protected $options
+    protected array $options
         = [
             # The IP address to bind to
-            'host'              => '0.0.0.0',
+            'host'            => '0.0.0.0',
             # The port that the traps will come in on
             'port'            => 162,
             'transport'       => 'udp',
@@ -48,12 +46,12 @@ class TrapSink
     /**
      * @var TrapServerRunner|null
      */
-    protected $server;
+    protected ?TrapServerRunner $server;
 
     /**
      * @var TrapListenerInterface
      */
-    protected $listener;
+    protected TrapListenerInterface $listener;
 
     /**
      * @param TrapListenerInterface $listener
@@ -73,8 +71,23 @@ class TrapSink
     public function listen(?ServerSocketInterface $serverSocket = null): void
     {
         $this->server()->run(
-            $serverSocket ?? new UdpServerSocket($this->options),
+            $serverSocket ?? $this->createSocketServer(),
         );
+    }
+
+    protected function createSocketServer(): ServerSocketInterface
+    {
+        switch ($this->options['transport']) {
+            case 'udp':
+                return new UdpServerSocket($this->options);
+            default:
+                throw new \InvalidArgumentException(
+                    sprintf(
+                        'Not supported transport type "%s", yet!',
+                        $this->options['transport'],
+                    ),
+                );
+        }
     }
 
     /**
@@ -90,7 +103,7 @@ class TrapSink
      *
      * @return $this
      */
-    public function setOptions(array $options)
+    public function setOptions(array $options): TrapSink
     {
         $this->options = array_merge($this->options, $options);
 
@@ -102,7 +115,7 @@ class TrapSink
      *
      * @return $this
      */
-    public function setServer(TrapServerRunner $server)
+    public function setServer(TrapServerRunner $server): TrapSink
     {
         $this->server = $server;
 
