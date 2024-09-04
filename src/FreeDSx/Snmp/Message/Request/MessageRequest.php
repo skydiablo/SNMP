@@ -15,7 +15,7 @@ use FreeDSx\Asn1\Type\IntegerType;
 use FreeDSx\Asn1\Type\SequenceType;
 use FreeDSx\Snmp\Exception\ProtocolException;
 use FreeDSx\Snmp\Message\AbstractMessage;
-use FreeDSx\Socket\PduInterface;
+use FreeDSx\Snmp\Message\PduInterface;
 
 /**
  * Basically used as a factory from the message queue to determine what message request to instantiate.

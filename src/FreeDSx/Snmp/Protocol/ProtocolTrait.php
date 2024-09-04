@@ -11,13 +11,12 @@
 namespace FreeDSx\Snmp\Protocol;
 
 use FreeDSx\Snmp\Exception\ConnectionException;
-use FreeDSx\Snmp\Message\Response\MessageResponse;
 use FreeDSx\Snmp\Protocol\Factory\SecurityModelModuleFactory;
+use FreeDSx\Snmp\Protocol\Socket\SocketInterface;
+use FreeDSx\Snmp\Protocol\Socket\UdpSocket;
 use FreeDSx\Snmp\Request\RequestInterface;
 use FreeDSx\Snmp\Request\TrapV1Request;
 use FreeDSx\Snmp\Response\ResponseInterface;
-use FreeDSx\Socket\Queue\Asn1MessageQueue;
-use FreeDSx\Socket\Socket;
 
 /**
  * Some common protocol handler functionality.
@@ -29,7 +28,7 @@ trait ProtocolTrait
     use IdGeneratorTrait;
 
     /**
-     * @var null|Socket
+     * @var null|SocketInterface
      */
     protected $socket;
 
@@ -37,11 +36,6 @@ trait ProtocolTrait
      * @var null|SnmpEncoder
      */
     protected $encoder;
-
-    /**
-     * @var null|Asn1MessageQueue
-     */
-    protected $queue;
 
     /**
      * @var SecurityModelModuleFactory
@@ -112,7 +106,7 @@ trait ProtocolTrait
      *
      * @param RequestInterface|ResponseInterface|TrapV1Request $pdu
      */
-    protected function setPduId($pdu, int $id) : void
+    protected function setPduId($pdu, int $id): void
     {
         if (!($pdu instanceof RequestInterface || $pdu instanceof ResponseInterface)) {
             return;
@@ -127,44 +121,54 @@ trait ProtocolTrait
         $idProperty->setValue($pdu, $id);
     }
 
-    protected function isRequestAllowed(int $version, int $request) : bool
+    protected function isRequestAllowed(int $version, int $request): bool
     {
         return \in_array($request, $this->allowedRequests[$version], true);
     }
 
     /**
      * @param array $options
-     * @return Socket
+     * @return \React\Promise\PromiseInterface<\React\Datagram\Socket>
      * @throws ConnectionException
      */
-    protected function socket(array $options = []) : Socket
+    protected function socket(array $options = []): \React\Promise\PromiseInterface
     {
-        if (!$this->socket) {
+        if ($this->socket) {
+            return \React\Promise\resolve($this->socket);
+        } else {
             $options += $this->options;
             try {
-                $this->socket = Socket::create($options['host'], [
-                    'transport' => $options['transport'],
-                    'port' => $options['port'],
-                    'buffer_size' => ($options['transport'] === 'udp') ? 65507 : 8192,
-                    'timeout_connect' => $options['timeout_connect'],
-                    'timeout_read' => $options['timeout_read'],
-                    'ssl_validate_cert' => $options['ssl_validate_cert'],
-                    'ssl_allow_self_signed' => $options['ssl_allow_self_signed'],
-                    'ssl_ca_cert' => $options['ssl_ca_cert'],
-                    'ssl_peer_name' => $options['ssl_peer_name'],
-                ]);
-            } catch (\FreeDSx\Socket\Exception\ConnectionException $e) {
+                if ($options['transport'] !== 'udp') {
+                    throw new \InvalidArgumentException('Only UDP as transport protocol allowed, yet!');
+                }
+
+                return \React\Async\async(function (array $options) {
+                    return $this->socket = new UdpSocket($options);
+                })($options);
+
+
+//                $this->socket =
+//                    Socket::create($options['host'], [
+//                    'transport' => $options['transport'],
+//                    'port' => $options['port'],
+//                    'buffer_size' => ($options['transport'] === 'udp') ? 65507 : 8192,
+//                    'timeout_connect' => $options['timeout_connect'],
+//                    'timeout_read' => $options['timeout_read'],
+//                    'ssl_validate_cert' => $options['ssl_validate_cert'],
+//                    'ssl_allow_self_signed' => $options['ssl_allow_self_signed'],
+//                    'ssl_ca_cert' => $options['ssl_ca_cert'],
+//                    'ssl_peer_name' => $options['ssl_peer_name'],
+//                ]);
+            } catch (\Throwable $e) {
                 throw new ConnectionException($e->getMessage(), $e->getCode(), $e);
             }
         }
-
-        return $this->socket;
     }
 
     /**
      * @return SnmpEncoder
      */
-    protected function encoder() : SnmpEncoder
+    protected function encoder(): SnmpEncoder
     {
         if (!$this->encoder) {
             $this->encoder = new SnmpEncoder();
@@ -173,20 +177,4 @@ trait ProtocolTrait
         return $this->encoder;
     }
 
-    /**
-     * @return Asn1MessageQueue
-     * @throws ConnectionException
-     */
-    protected function queue() : Asn1MessageQueue
-    {
-        if (!$this->queue) {
-            $this->queue = new Asn1MessageQueue(
-                $this->socket(),
-                $this->encoder(),
-                MessageResponse::class
-            );
-        }
-
-        return $this->queue;
-    }
 }

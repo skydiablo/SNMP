@@ -17,7 +17,7 @@ use FreeDSx\Snmp\Message\Pdu;
 use FreeDSx\Snmp\Message\Response\MessageResponseInterface;
 use FreeDSx\Snmp\Protocol\ClientProtocolHandler;
 use FreeDSx\Snmp\Value\TimeTicksValue;
-use FreeDSx\Socket\Socket;
+use React\Promise\PromiseInterface;
 
 /**
  * The SnmpClient class.
@@ -56,14 +56,11 @@ class SnmpClient
     ];
 
     /**
-     * @var Socket
-     */
-    protected $socket;
-
-    /**
      * @var ClientProtocolHandler|null
      */
-    protected $handler = null;
+    protected ?ClientProtocolHandler $handler = null;
+
+    protected ?SnmpWalk $snmpWalkCache = null;
 
     /**
      * @param array $options
@@ -73,93 +70,106 @@ class SnmpClient
         $this->options = array_merge($this->options, $options);
     }
 
+    public function __destruct()
+    {
+        unset($this->handler);
+    }
+
+
     /**
      * Send a bulk request and get the OidList back.
      *
      * @param int $maxRepetitions
      * @param int $nonRepeaters
      * @param string|Oid ...$oids
-     * @return OidList
+     * @return PromiseInterface<OidList>
      * @throws ConnectionException
      * @throws SnmpRequestException
      */
     public function getBulk(
         int $maxRepetitions,
         int $nonRepeaters,
-        ...$oids
-    ): OidList {
-        return $this->sendAndReceive(Requests::getBulk($maxRepetitions, $nonRepeaters, ...$oids))
-            ->getResponse()
-            ->getOids();
+            ...$oids
+    ): PromiseInterface
+    {
+        return $this->sendAndReceive(Requests::getBulk($maxRepetitions, $nonRepeaters, ...$oids))->then(function ($response) {
+            return $response->getResponse()
+                ->getOids();
+        });
     }
 
     /**
      * Send a get next request to get the next variable(s) in the MIB tree back.
      *
      * @param string|Oid ...$oids
-     * @return OidList
+     * @return PromiseInterface<OidList>
      * @throws ConnectionException
      * @throws SnmpRequestException
      */
-    public function getNext(...$oids): OidList
+    public function getNext(...$oids): PromiseInterface
     {
-        return $this->sendAndReceive(Requests::getNext(...$oids))
-            ->getResponse()
-            ->getOids();
+        return $this->sendAndReceive(Requests::getNext(...$oids))->then(function ($response) {
+            return $response->getResponse()
+                ->getOids();
+        });
     }
 
     /**
      * Get any number of OID objects as an OidList.
      *
      * @param string|Oid ...$oids
-     * @return OidList
+     * @return PromiseInterface<OidList>
      * @throws ConnectionException
      * @throws SnmpRequestException
      */
-    public function get(...$oids): OidList
+    public function get(...$oids): PromiseInterface
     {
-        return $this->sendAndReceive(Requests::get(...$oids))
-            ->getResponse()
-            ->getOids();
+        return $this->sendAndReceive(Requests::get(...$oids))->then(function ($response) {
+            return $response->getResponse()
+                ->getOids();
+        });
+
     }
 
     /**
      * Get a single OID object. This contains the value object. If it doesn't exist, null is returned.
      *
      * @param string|Oid $oid
-     * @return Oid|null
+     * @return PromiseInterface<Oid|null>
      * @throws ConnectionException
      * @throws SnmpRequestException
      */
-    public function getOid($oid): ?Oid
+    public function getOid($oid): PromiseInterface
     {
-        return $this->get($oid)->first();
+        return $this->get($oid)->then(function ($response) {
+            return $response->first();
+        });
     }
 
     /**
      * Get the string value of an OID. If it doesn't exist, it will return null.
      *
      * @param string|Oid $oid
-     * @return null|string
+     * @return PromiseInterface<null|string>
      * @throws ConnectionException
      * @throws SnmpRequestException
      */
-    public function getValue($oid): ?string
+    public function getValue($oid): PromiseInterface
     {
-        $oid = $this->getOid($oid);
-
-        return $oid ? (string) $oid->getValue() : null;
+        return $this->getOid($oid)->then(function ($oid) {
+            return $oid ? (string)$oid->getValue() : null;
+        });
     }
 
     /**
      * Set one, or many, OID values.
      *
      * @param Oid ...$oids
-     * @return MessageResponseInterface
+     * @return PromiseInterface<MessageResponseInterface>
      * @throws ConnectionException
      * @throws SnmpRequestException
      */
-    public function set(...$oids): MessageResponseInterface
+    public function set(...$oids): PromiseInterface
     {
         return $this->sendAndReceive(Requests::set(...$oids));
     }
@@ -178,7 +188,8 @@ class SnmpClient
         $sysUpTime,
         $trapOid,
         ...$oids
-    ): self {
+    ): self
+    {
         $this->send(Requests::trap(
             $sysUpTime,
             $trapOid,
@@ -204,11 +215,12 @@ class SnmpClient
     public function sendTrapV1(
         string $enterprise,
         string $address,
-        int $genericType,
-        int $specificType,
-        int $sysUpTime,
-        ...$oids
-    ): self {
+        int    $genericType,
+        int    $specificType,
+        int    $sysUpTime,
+               ...$oids
+    ): self
+    {
         $this->send(Requests::trapV1(
             $enterprise,
             $address,
@@ -227,7 +239,7 @@ class SnmpClient
      * @param int|TimeTicksValue $sysUpTime
      * @param string|Oid $trapOid
      * @param Oid ...$oids
-     * @return MessageResponseInterface
+     * @return PromiseInterface<MessageResponseInterface>
      * @throws ConnectionException
      * @throws SnmpRequestException
      */
@@ -235,7 +247,8 @@ class SnmpClient
         $sysUpTime,
         $trapOid,
         ...$oids
-    ): MessageResponseInterface {
+    ): PromiseInterface
+    {
         return $this->sendAndReceive(Requests::inform(
             $sysUpTime,
             $trapOid,
@@ -253,7 +266,8 @@ class SnmpClient
     public function walk(
         string $startAt = null,
         string $endAt = null
-    ): SnmpWalk {
+    ): SnmpWalk
+    {
         return new SnmpWalk(
             $this,
             $startAt,
@@ -267,14 +281,15 @@ class SnmpClient
      *
      * @param Pdu $request
      * @param array $options
-     * @return MessageResponseInterface
+     * @return PromiseInterface<MessageResponseInterface>
      * @throws ConnectionException
      * @throws Exception\SnmpRequestException
      */
     public function send(
-        Pdu $request,
+        Pdu   $request,
         array $options = []
-    ): ?MessageResponseInterface {
+    ): PromiseInterface
+    {
         return $this->dispatcher()->handle(
             $request,
             array_merge($this->options, $options)
@@ -287,25 +302,25 @@ class SnmpClient
      *
      * @param Pdu $request The request to send.
      * @param array $options Any options for sending.
-     * @return MessageResponseInterface
+     * @return PromiseInterface<MessageResponseInterface>
      * @throws ConnectionException
      * @throws SnmpRequestException
      * @throws RuntimeException
      */
     public function sendAndReceive(
-        Pdu $request,
+        Pdu   $request,
         array $options = []
-    ): MessageResponseInterface {
-        $response = $this->send(
+    ): PromiseInterface
+    {
+        return $this->send(
             $request,
             $options
-        );
-
-        if ($response === null) {
-            throw new RuntimeException('Expected an SNMP response, but non was received.');
-        }
-
-        return $response;
+        )->then(function ($response) {
+            if ($response === null) {
+                throw new RuntimeException('Expected an SNMP response, but non was received.');
+            }
+            return $response;
+        });
     }
 
     /**
