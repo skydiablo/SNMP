@@ -46,7 +46,7 @@ class TrapSink
     /**
      * @var TrapServerRunner|null
      */
-    protected ?TrapServerRunner $server;
+    protected ?TrapServerRunner $server = null;
 
     /**
      * @var TrapListenerInterface
