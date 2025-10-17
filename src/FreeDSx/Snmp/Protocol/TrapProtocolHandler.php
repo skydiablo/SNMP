@@ -11,6 +11,7 @@
 namespace FreeDSx\Snmp\Protocol;
 
 use FreeDSx\Snmp\Exception\InvalidArgumentException;
+use FreeDSx\Snmp\Exception\RequestMessageException;
 use FreeDSx\Snmp\Exception\RuntimeException;
 use FreeDSx\Snmp\Message\AbstractMessage;
 use FreeDSx\Snmp\Message\Request\MessageRequest;
@@ -32,7 +33,6 @@ use FreeDSx\Snmp\Module\SecurityModel\Usm\UsmUser;
 
 use React\Promise\PromiseInterface;
 
-use function React\Promise\reject;
 use function React\Promise\resolve;
 
 /**
@@ -94,15 +94,13 @@ class TrapProtocolHandler
         string $ipAddress,
         string $data,
         array $options
-    ): \React\Promise\PromiseInterface {
+    ): void {
         $options = \array_merge($this->options, $options);
 
         $portLoc = \strrpos($ipAddress, ':');
         if (!is_int($portLoc)) {
-            return reject(
-                new InvalidArgumentException(
-                    sprintf('No port available: %s', $ipAddress),
-                ),
+            throw new InvalidArgumentException(
+                sprintf('No port available: %s', $ipAddress),
             );
         }
         $port = (int)\substr(
@@ -126,12 +124,10 @@ class TrapProtocolHandler
             $options['whitelist'] ?? null,
         )
         ) {
-            return reject(
-                new RuntimeException(
-                    sprintf(
-                        'IP Address is not allowed or in whitelist: %s',
-                        $ipAddress,
-                    ),
+            throw new RuntimeException(
+                sprintf(
+                    'IP Address is not allowed or in whitelist: %s',
+                    $ipAddress,
                 ),
             );
         }
@@ -142,52 +138,43 @@ class TrapProtocolHandler
                 $options['version'] ?? null,
             )
         ) {
-            return reject(
-                new RuntimeException(
-                    sprintf(
-                        'Version is not allowed: %s',
-                        $message->getVersion(),
-                    ),
+            throw (new RequestMessageException(
+                sprintf(
+                    'Version is not allowed: %s',
+                    $message->getVersion(),
                 ),
-            );
+            ))->setRequest($message);
         }
         if ($message instanceof MessageRequestV3) {
             $message = $this->handleV3Trap($message, $ipAddress, $options);
             if ($message === null) {
-                return reject(
-                    new RuntimeException(
-                        'Can not generate V3 trap message',
-                    ),
-                );
+                throw (new RequestMessageException(
+                    'Can not generate V3 trap message',
+                ))->setRequest($message);
             }
         }
         # If an error happened during SNMPv3 processing, then the message will return null
         if ($message === null) {
-            return reject(
-                new RuntimeException(
-                    'Can not generate trap message',
-                ),
+            throw new RequestMessageException(
+                'Can not generate trap message',
             );
         }
         if (!$this->isMessageAllowed($message, $options)) {
-            return reject(
-                new RuntimeException(
-                    'Trap message is not allowed',
-                ),
-            );
+            throw (new RequestMessageException(
+                'Trap message is not allowed',
+            ))->setRequest($message);
         }
         $version = $this->versionMap[$message->getVersion()];
         $context = new TrapContext($ipAddress, $version, $message);
         $this->listener->receive($context)->then();
 
         if ($message->getRequest() instanceof InformRequest) {
-            return $this->sendResponse(
+            $this->sendResponse(
                 $ipAddress,
                 $port,
                 $message,
             );
         }
-        return resolve(true);
     }
 
     /**
@@ -221,17 +208,13 @@ class TrapProtocolHandler
             $response,
         );
 
-        try {
-            return $this->socket(['host' => $ip, 'port' => $port])->then(
-                function (SocketInterface $socket) use ($informResponse) {
-                    return $socket->write(
-                        $this->encoder()->encode($informResponse->toAsn1()),
-                    );
-                },
-            );
-        } catch (\Exception $e) {
-            return resolve(null);
-        }
+        return $this->socket(['host' => $ip, 'port' => $port])->then(
+            function (SocketInterface $socket) use ($informResponse) {
+                return $socket->write(
+                    $this->encoder()->encode($informResponse->toAsn1()),
+                );
+            },
+        );
     }
 
     /**
