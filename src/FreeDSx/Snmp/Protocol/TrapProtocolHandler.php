@@ -143,26 +143,32 @@ class TrapProtocolHandler
                     'Version is not allowed: %s',
                     $message->getVersion(),
                 ),
-            ))->setRequest($message);
+            ))
+                ->setRequest($message)
+                ->setOptions($options);
         }
         if ($message instanceof MessageRequestV3) {
             $message = $this->handleV3Trap($message, $ipAddress, $options);
             if ($message === null) {
                 throw (new RequestMessageException(
                     'Can not generate V3 trap message',
-                ))->setRequest($message);
+                ))
+                    ->setRequest($message)
+                    ->setOptions($options);
             }
         }
         # If an error happened during SNMPv3 processing, then the message will return null
         if ($message === null) {
-            throw new RequestMessageException(
+            throw (new RequestMessageException(
                 'Can not generate trap message',
-            );
+            ))->setOptions($options);
         }
         if (!$this->isMessageAllowed($message, $options)) {
             throw (new RequestMessageException(
                 'Trap message is not allowed',
-            ))->setRequest($message);
+            ))
+                ->setRequest($message)
+                ->setOptions($options);
         }
         $version = $this->versionMap[$message->getVersion()];
         $context = new TrapContext($ipAddress, $version, $message);

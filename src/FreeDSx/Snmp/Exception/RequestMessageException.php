@@ -10,6 +10,7 @@ class RequestMessageException extends RuntimeException
 {
 
     protected ?MessageRequestInterface $request = null;
+    protected array $options = [];
 
     public function getRequest(): ?MessageRequestInterface
     {
@@ -19,6 +20,18 @@ class RequestMessageException extends RuntimeException
     public function setRequest(?MessageRequestInterface $request): self
     {
         $this->request = $request;
+
+        return $this;
+    }
+
+    public function getOptions(): array
+    {
+        return $this->options;
+    }
+
+    public function setOptions(array $options): RequestMessageException
+    {
+        $this->options = $options;
 
         return $this;
     }
