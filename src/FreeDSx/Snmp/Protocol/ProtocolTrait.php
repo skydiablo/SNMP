@@ -18,6 +18,8 @@ use FreeDSx\Snmp\Request\RequestInterface;
 use FreeDSx\Snmp\Request\TrapV1Request;
 use FreeDSx\Snmp\Response\ResponseInterface;
 
+use function React\Promise\reject;
+
 /**
  * Some common protocol handler functionality.
  *
@@ -130,6 +132,7 @@ trait ProtocolTrait
      * @param array $options
      * @return \React\Promise\PromiseInterface<\React\Datagram\Socket>
      * @throws ConnectionException
+     * @todo: is this this internal socket variable all the time the right one?
      */
     protected function socket(array $options = []): \React\Promise\PromiseInterface
     {
@@ -160,7 +163,7 @@ trait ProtocolTrait
 //                    'ssl_peer_name' => $options['ssl_peer_name'],
 //                ]);
             } catch (\Throwable $e) {
-                throw new ConnectionException($e->getMessage(), $e->getCode(), $e);
+                return reject(new ConnectionException($e->getMessage(), $e->getCode(), $e));
             }
         }
     }
