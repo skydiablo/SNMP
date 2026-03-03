@@ -236,6 +236,10 @@ class SnmpWalk
     protected function getNextOid(?Oid $reference): PromiseInterface
     {
         $currentOid = $reference ? $reference->getOid() : $this->startAt;
+        // ASN.1 BER requires at least 2 OID components; single-component OIDs (e.g. "1") are invalid
+        if (!str_contains(ltrim($currentOid, '.'), '.')) {
+            $currentOid = $currentOid . '.0';
+        }
 
         if (($this->useGetBulk === null || $this->useGetBulk) && $this->client->getOptions()['version'] >= 2) {
             return $this->client->getBulk($this->maxRepetitions, 0, $currentOid)->then(function (OidList $oidList) {
