@@ -16,7 +16,6 @@ use FreeDSx\Asn1\Type\IntegerType;
 use FreeDSx\Asn1\Type\OctetStringType;
 use FreeDSx\Asn1\Type\SequenceType;
 use FreeDSx\Snmp\Exception\ProtocolException;
-use FreeDSx\Socket\PduInterface;
 
 /**
  * Represents a base for an SNMPv1/v2 Message.

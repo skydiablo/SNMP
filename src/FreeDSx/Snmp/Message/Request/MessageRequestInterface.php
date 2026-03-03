@@ -11,7 +11,7 @@
 namespace FreeDSx\Snmp\Message\Request;
 
 use FreeDSx\Snmp\Message\Pdu;
-use FreeDSx\Socket\PduInterface;
+use FreeDSx\Snmp\Message\PduInterface;
 
 /**
  * Interface for an SNMP message used in a request.

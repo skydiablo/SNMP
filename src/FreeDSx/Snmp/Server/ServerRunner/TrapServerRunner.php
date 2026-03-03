@@ -10,8 +10,8 @@
 
 namespace FreeDSx\Snmp\Server\ServerRunner;
 
+use FreeDSx\Snmp\Protocol\Socket\ServerSocketInterface;
 use FreeDSx\Snmp\Protocol\TrapProtocolHandler;
-use FreeDSx\Socket\SocketServer;
 
 /**
  * Server for synchronous trap request handling.
@@ -23,19 +23,21 @@ class TrapServerRunner implements ServerRunnerInterface
     /**
      * @var array
      */
-    protected $options;
+    protected array $options;
 
     /**
      * @var TrapProtocolHandler
      */
-    protected $handler;
+    protected TrapProtocolHandler $handler;
 
     /**
      * @param TrapProtocolHandler $handler
-     * @param array $options
+     * @param array               $options
      */
-    public function __construct(TrapProtocolHandler $handler, array $options = [])
-    {
+    public function __construct(
+        TrapProtocolHandler $handler,
+        array $options = []
+    ) {
         $this->options = $options;
         $this->handler = $handler;
     }
@@ -43,13 +45,10 @@ class TrapServerRunner implements ServerRunnerInterface
     /**
      * {@inheritdoc}
      */
-    public function run(SocketServer $server) : void
+    public function run(ServerSocketInterface $server): void
     {
-        while ($data = $server->receive($ipAddress)) {
-            try {
-                $this->handler->handle($ipAddress, $data, $this->options);
-            } catch (\Exception|\Throwable $e) {
-            }
-        }
+        $server->onData(function (string $message, string $address, $server) {
+            $this->handler->handle($address, $message, $this->options);
+        });
     }
 }

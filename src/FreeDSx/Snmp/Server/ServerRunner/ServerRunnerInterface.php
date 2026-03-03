@@ -10,7 +10,7 @@
 
 namespace FreeDSx\Snmp\Server\ServerRunner;
 
-use FreeDSx\Socket\SocketServer;
+use FreeDSx\Snmp\Protocol\Socket\ServerSocketInterface;
 
 /**
  * Runs the server to support various transports / handling logic, etc.
@@ -22,7 +22,7 @@ interface ServerRunnerInterface
     /**
      * Runs the socket server to accept incoming client connections and dispatch them where needed.
      *
-     * @param SocketServer $server
+     * @param ServerSocketInterface $server
      */
-    public function run(SocketServer $server) : void;
+    public function run(ServerSocketInterface $server) : void;
 }

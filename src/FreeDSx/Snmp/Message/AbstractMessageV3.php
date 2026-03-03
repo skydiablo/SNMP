@@ -20,7 +20,6 @@ use FreeDSx\Snmp\Exception\RuntimeException;
 use FreeDSx\Snmp\Message\Security\SecurityParametersInterface;
 use FreeDSx\Snmp\Protocol\Factory\SecurityParametersFactory;
 use FreeDSx\Snmp\Protocol\SnmpEncoder;
-use FreeDSx\Socket\PduInterface;
 
 /**
  * Represents the SNMPv3 Message format. RFC 3412.
